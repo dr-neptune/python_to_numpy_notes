@@ -7,15 +7,34 @@ import numpy as np
 def add_python(Z1, Z2):
     return [z1 + z2 for z1, z2 in zip(Z1, Z2)]
 
-
 def add_numpy(Z1, Z2):
     return np.add(Z1, Z2)
 
+vec_length = 1_000_000
+Z1, Z2 = random.sample(range(vec_length), vec_length), random.sample(range(vec_length), vec_length)
 
-Z1, Z2 = random.sample(range(1000), 100), random.sample(range(1000), 100)
+# %timeit add_python(Z1, Z2)
+# 253 ms ± 4.55 ms per loop (mean ± std. dev. of 7 runs, 1 loop each)
 
-# python: 5.23 µs ± 457 ns per loop (mean ± std. dev. of 7 runs, 100,000 loops each)
-# numpy: 10.7 µs ± 118 ns per loop (mean ± std. dev. of 7 runs, 100,000 loops each)
+# %timeit add_numpy(Z1, Z2)
+# 501 ms ± 19 ms per loop (mean ± std. dev. of 7 runs, 1 loop each)
+
+def add_python(Z1, Z2):
+    return [((z1**2 + z2**2)**0.5) + ((z1 + z2)**3) for z1, z2 in zip(Z1, Z2)]
+
+def add_numpy(Z1, Z2):
+    return np.sqrt(Z1**2 + Z2**2) + (Z1 + Z2)**3
+
+vec_length = 1_000_000
+Z1, Z2 = random.sample(range(vec_length), vec_length), random.sample(range(vec_length), vec_length)
+Z1_np, Z2_np = np.array(Z1, dtype=np.float64), np.array(Z2, dtype=np.float64)
+
+%timeit add_python(Z1, Z2)
+# 665 ms ± 20.3 ms per loop (mean ± std. dev. of 7 runs, 1 loop each)
+
+%timeit add_numpy(Z1_np, Z2_np)
+# 54.2 ms ± 2.7 ms per loop (mean ± std. dev. of 7 runs, 10 loops each)
+
 
 ## 4.11 Uniform Vectorization
 
@@ -168,3 +187,113 @@ def mandelbrot_python(xmin, xmax, ymin, ymax, xn, yn, maxiter, horizon=2.0):
     r1 = [xmin + i * (xmax - xmin) / xn for i in range(xn)]
     r2 = [ymin + i * (ymax - ymin) / yn for i in range(yn)]
     return [mandelbrot(complex(r, i), maxiter) for r in r1 for i in r2]
+
+def mandelbrot_numpy(xmin, xmax, ymin, ymax, xn, yn, maxiter, horizon=2.0):
+    X = np.linspace(xmin, xmax, xn, dtype=np.float32)
+    Y = np.linspace(ymin, ymax, yn, dtype=np.float32)
+    C = X + Y[:,None]*1j
+    N = np.zeros(C.shape, dtype=int)
+    Z = np.zeros(C.shape, np.complex64)
+    for n in range(maxiter):
+        I = np.less(abs(Z), horizon)
+        N[I] = n
+        Z[I] = Z[I]**2 + C[I]
+    N[N == maxiter-1] = 0
+    return Z, N
+
+def mandelbrot_numpy_2(xmin, xmax, ymin, ymax, xn, yn, itermax, horizon=2.0):
+    Xi, Yi = np.mgrid[0:xn, 0:yn]
+    Xi, Yi = Xi.astype(np.uint32), Yi.astype(np.uint32)
+    X = np.linspace(xmin, xmax, xn, dtype=np.float32)[Xi]
+    Y = np.linspace(ymin, ymax, yn, dtype=np.float32)[Yi]
+    C = X + Y*1j
+    N_ = np.zeros(C.shape, dtype=np.uint32)
+    Z_ = np.zeros(C.shape, dtype=np.complex64)
+    Xi.shape = Yi.shape = C.shape = xn*yn
+
+    Z = np.zeros(C.shape, np.complex64)
+    for i in range(itermax):
+        if not len(Z): break
+
+        # Compute for relevant points only
+        np.multiply(Z, Z, Z)
+        np.add(Z, C, Z)
+
+        # Failed convergence
+        I = abs(Z) > horizon
+        N_[Xi[I], Yi[I]] = i+1
+        Z_[Xi[I], Yi[I]] = Z[I]
+
+        # Keep going with those who have not diverged yet
+        I = ~I
+        # np.negative(I,I)
+        Z = Z[I]
+        Xi, Yi = Xi[I], Yi[I]
+        C = C[I]
+    return Z_.T, N_.T
+
+xmin, xmax, xn = -2.25, +0.75, int(3000/3)
+ymin, ymax, yn = -1.25, +1.25, int(2500/3)
+maxiter = 200
+
+%timeit mandelbrot_python(xmin, xmax, ymin, ymax, xn, yn, maxiter)
+%timeit mandelbrot_numpy(xmin, xmax, ymin, ymax, xn, yn, maxiter)
+mandelbrot_numpy_2(xmin, xmax, ymin, ymax, xn, yn, maxiter)
+# ~ 3.5x speedup
+
+
+## Minkowski-Bouligand dimension
+
+def fractal_dimension(Z, threshold=0.9):
+    def boxcount(Z, k):
+        S = np.add.reduceat(
+            np.add.reduceat(Z, np.arange(0, Z.shape[0], k), axis=0),
+                               np.arange(0, Z.shape[1], k), axis=1)
+        return len(np.where((S > 0) & (S < k*k))[0])
+    Z = (Z < threshold)
+    p = min(Z.shape)
+    n = 2**np.floor(np.log(p)/np.log(2))
+    n = int(np.log(n)/np.log(2))
+    sizes = 2**np.arange(n, 1, -1)
+    counts = []
+    for size in sizes:
+        counts.append(boxcount(Z, size))
+    coeffs = np.polyfit(np.log(sizes), np.log(counts), 1)
+    return -coeffs[0]
+
+
+import matplotlib.pyplot as plt
+import matplotlib.patches as patches
+import imageio.v2 as imageio
+
+Z = 1.0 - imageio.imread("../from-python-to-numpy/data/Great-Britain.png")/255
+
+print(fractal_dimension(Z, threshold=0.25))
+
+sizes = 128, 64, 32
+xmin, xmax = 0, Z.shape[1]
+ymin, ymax = 0, Z.shape[0]
+fig = plt.figure(figsize=(10, 5))
+
+for i, size in enumerate(sizes):
+    ax = plt.subplot(1, len(sizes), i+1, frameon=False)
+    ax.imshow(1-Z, plt.cm.gray, interpolation="bicubic", vmin=0, vmax=1,
+              extent=[xmin, xmax, ymin, ymax], origin="upper")
+    ax.set_xticks([])
+    ax.set_yticks([])
+    for y in range(Z.shape[0]//size+1):
+        for x in range(Z.shape[1]//size+1):
+            s = (Z[y*size:(y+1)*size, x*size:(x+1)*size] > 0.25).sum()
+            if s > 0 and s < size*size:
+                rect = patches.Rectangle(
+                    (x*size, Z.shape[0]-1-(y+1)*size),
+                    width=size, height=size,
+                    linewidth=.5, edgecolor='.25',
+                    facecolor='.75', alpha=.5)
+                ax.add_patch(rect)
+
+plt.tight_layout()
+# plt.savefig("fractal-dimension.png")
+plt.show()
+
+## Spatial Vectorization
